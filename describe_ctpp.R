@@ -3,8 +3,14 @@
 library(tidyverse)
 library(sf)
 
+setwd("H:/res-pow-seg")
+
 #load the data
 load("./input/ctpp-neigh-chg-data.RData")
+
+#remove cases without any people
+ctpp <- ctpp %>%
+  filter(trt_tot_pop > 0)
 
 
 ####  Diagnostics --------------------------------------------------------------
@@ -40,7 +46,8 @@ ctpp_metros <- ctpp %>%
 
 #### Trends in segregation -----------------------------------------------------
 
-res_seg <- ctpp %>%
+#black-white
+nhb_res_seg <- ctpp %>%
   st_drop_geometry %>%
   filter(!is.na(res_nhb_est), !is.na(res_nhw_est)) %>%
   group_by(year, cbsafp, metro_name) %>%
@@ -51,7 +58,7 @@ res_seg <- ctpp %>%
                                                res_nhw_est/sum(res_nhw_est)))) %>%
   mutate(type = "Residence")
 
-pow_seg <- ctpp %>%
+nhb_pow_seg <- ctpp %>%
   st_drop_geometry %>%
   filter(!is.na(pow_nhb_est), !is.na(pow_nhw_est)) %>%
   group_by(year, cbsafp, metro_name) %>%
@@ -62,17 +69,177 @@ pow_seg <- ctpp %>%
                                            pow_nhw_est/sum(pow_nhw_est)))) %>%
   mutate(type = "Workplace")
 
-
-nhb_seg <- bind_rows(res_seg, pow_seg) %>%
+nhb_seg <- bind_rows(nhb_res_seg, nhb_pow_seg) %>%
   filter(cbsafp %in% ctpp_metros$nhb) %>%
   mutate(seg = "Black-White")
 
-nhb_seg_trends <- seg %>%
-  group_by(type, year) %>%
+#latinx-white
+h_res_seg <- ctpp %>%
+  st_drop_geometry %>%
+  filter(!is.na(res_h_est), !is.na(res_nhw_est)) %>%
+  group_by(year, cbsafp, metro_name) %>%
+  summarize(metro_n = length(unique(geoid)),
+            metro_h = sum(res_h_est),
+            metro_pop = sum(res_total_est),
+            dis_h_nhw = (.5) * sum(abs(res_h_est/sum(res_h_est) - 
+                                           res_nhw_est/sum(res_nhw_est)))) %>%
+  mutate(type = "Residence")
+
+h_pow_seg <- ctpp %>%
+  st_drop_geometry %>%
+  filter(!is.na(pow_h_est), !is.na(pow_nhw_est)) %>%
+  group_by(year, cbsafp, metro_name) %>%
+  summarize(metro_n = length(unique(geoid)),
+            metro_h = sum(pow_h_est),
+            metro_pop = sum(pow_total_est),
+            dis_h_nhw = (.5) * sum(abs(pow_h_est/sum(pow_h_est) - 
+                                           pow_nhw_est/sum(pow_nhw_est)))) %>%
+  mutate(type = "Workplace")
+
+h_seg <- bind_rows(h_res_seg, h_pow_seg) %>%
+  filter(cbsafp %in% ctpp_metros$h) %>%
+  mutate(seg = "Latinx-White")
+
+
+#asian-white
+nha_res_seg <- ctpp %>%
+  st_drop_geometry %>%
+  filter(!is.na(res_nha_est), !is.na(res_nhw_est)) %>%
+  group_by(year, cbsafp, metro_name) %>%
+  summarize(metro_n = length(unique(geoid)),
+            metro_nha = sum(res_nha_est),
+            metro_pop = sum(res_total_est),
+            dis_nha_nhw = (.5) * sum(abs(res_nha_est/sum(res_nha_est) - 
+                                         res_nhw_est/sum(res_nhw_est)))) %>%
+  mutate(type = "Residence")
+
+nha_pow_seg <- ctpp %>%
+  st_drop_geometry %>%
+  filter(!is.na(pow_nha_est), !is.na(pow_nhw_est)) %>%
+  group_by(year, cbsafp, metro_name) %>%
+  summarize(metro_n = length(unique(geoid)),
+            metro_nha = sum(pow_nha_est),
+            metro_pop = sum(pow_total_est),
+            dis_nha_nhw = (.5) * sum(abs(pow_nha_est/sum(pow_nha_est) - 
+                                         pow_nhw_est/sum(pow_nhw_est)))) %>%
+  mutate(type = "Workplace")
+
+nha_seg <- bind_rows(nha_res_seg, nha_pow_seg) %>%
+  filter(cbsafp %in% ctpp_metros$nha) %>%
+  mutate(seg = "Asian/PI-White")
+
+
+#compute weighted average according to metro pops
+nhb_seg_trends <- nhb_seg %>%
+  group_by(seg, type, year) %>%
   summarize(n = n(),
             mean = weighted.mean(dis_nhb_nhw, w = metro_nhb))
-seg_trends
+
+h_seg_trends <- h_seg %>%
+  group_by(seg, type, year) %>%
+  summarize(n = n(),
+            mean = weighted.mean(dis_h_nhw, w = metro_h))
+
+nha_seg_trends <- nha_seg %>%
+  group_by(seg, type, year) %>%
+  summarize(n = n(),
+            mean = weighted.mean(dis_nha_nhw, w = metro_nha))
+
+seg_trends <- bind_rows(nhb_seg_trends, h_seg_trends, nha_seg_trends)
+
+seg_trends_gg <- ggplot(seg_trends, aes(x = year, y = mean, linetype = type,
+                                        color = seg, shape = seg,
+                       group = fct_cross(type, seg))) +
+  geom_line() +
+  geom_point(size = 2) +
+  theme_bw() +
+  theme(legend.position = "bottom") +
+  labs(x = "", y = "Average Dissimilarity Index\n", color = "", 
+       shape = "", linetype = "Type")
+
+seg_trends_gg
+
+ggsave(filename = "./output/seg_trends.pdf", seg_trends_gg,
+       width = 8, height = 6, dpi = 300)
+
 
 #### Neighborhood change matrix ------------------------------------------------
 
-#what are the typical intraday trajectories for a given neighborhood
+
+ctpp <- ctpp %>%
+  mutate(am_cat = case_when(
+    
+    #predominant compositions
+    trt_shr_nhw_am >= .90 ~ "White",
+    trt_shr_nhb_am >= .90 ~ "Black",
+    trt_shr_nha_am >= .90 ~ "Asian/PI",
+    trt_shr_h_am >= .90 ~ "Latinx",
+    
+    #shared compositions
+    trt_shr_nhw_am < .90 & trt_shr_nhw_am >= .50 &
+      trt_shr_nhb_am > .10 & trt_shr_nhb_am < .50 &
+      trt_shr_h_am < .10 & trt_shr_nha_am < .10 & trt_shr_nho_am < .10 ~ "White-Black",
+   
+    trt_shr_nhw_am < .90 & trt_shr_nhw_am >= .50 &
+      trt_shr_h_am > .10 & trt_shr_h_am < .50 &
+      trt_shr_nhb_am < .10 & trt_shr_nha_am < .10 & trt_shr_nho_am < .10 ~ "White-Latinx",
+    
+    TRUE ~ "Multiethnic"
+  )) %>%
+  mutate(pm_cat = case_when(
+    
+    #predominant compositions
+    trt_shr_nhw_pm >= .50 ~ "White",
+    trt_shr_nhb_pm >= .50 ~ "Black",
+    trt_shr_nha_pm >= .50 ~ "Asian/PI",
+    trt_shr_h_pm >= .50 ~ "Latinx",
+    TRUE ~ "Multiethnic"
+  ))
+
+
+ctpp %>%
+  st_drop_geometry() %>%
+  group_by(year, am_cat) %>%
+  tally() %>%
+  group_by(year) %>%
+  mutate(shr = n/sum(n)) %>%
+  print(n = Inf)
+
+ctpp %>%
+  st_drop_geometry() %>%
+  group_by(year, am_cat) %>%
+  summarize(nhw = mean(trt_shr_nhw_am, na.rm = TRUE),
+            nhb = mean(trt_shr_nhb_am, na.rm = TRUE),
+            h = mean(trt_shr_h_am, na.rm = TRUE),
+            nha = mean(trt_shr_nha_am, na.rm = TRUE),
+            nho = mean(trt_shr_nho_am, na.rm = TRUE)) %>%
+  filter(am_cat %in% c("Multiethnic", "White"))
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
