@@ -10,10 +10,17 @@ setwd("H:/res-pow-seg")
 county_2000 <- st_read("./input/geo/US_county_2000.shp")
 county_2010 <- st_read("./input/geo/US_county_2010.shp")
 
-#load NHGIS tract shapefile
-tract_2000 <- st_read("./input/geo/US_tract_2000.shp")
-tract_2010 <- st_read("./input/geo/US_tract_2010.shp")
-tract_2016 <- st_read("./input/geo/US_tract_2016.shp")
+#load NHGIS tract estimates
+tract_2000_a <- read_csv("./input/nhgis0189_csv/nhgis0189_ds146_2000_tract.csv")
+tract_2000_b <- read_csv("./input/nhgis0189_csv/nhgis0189_ds151_2000_tract.csv")
+tract_2000 <- inner_join(tract_2000_a, tract_2000_b)
+tract_2010 <- read_csv("./input/nhgis0189_csv/nhgis0189_ds176_20105_2010_tract.csv")
+tract_2016 <- read_csv("./input/nhgis0189_csv/nhgis0189_ds225_20165_2016_tract.csv")
+
+#load NHGIS tract shapefiles
+tract_2000_shp <- st_read("./input/geo/US_tract_2000.shp")
+tract_2010_shp <- st_read("./input/geo/US_tract_2010.shp")
+tract_2016_shp <- st_read("./input/geo/US_tract_2016.shp")
 
 #load NHGIS cbsa shapefile
 cbsa <- st_read("./input/geo/US_cbsa_2010.shp")
@@ -103,26 +110,26 @@ ctpp <- ctpp %>%
 
 #### C. Add tract geometry -----------------------------------------------------
 
-tract_2000 <- tract_2000 %>%
+tract_2000_shp <- tract_2000_shp %>%
   mutate(year = "2000",
          geoid = paste0(str_sub(GISJOIN2, 1, 2),
                         str_sub(GISJOIN2, 4, 6),
                         str_sub(GISJOIN2, 8, 13))) %>%
-  select(year, geoid, geometry)
+  select(year, geoid, GISJOIN, geometry)
 
-tract_2010 <- tract_2010 %>% 
+tract_2010_shp <- tract_2010_shp %>% 
   mutate(year = "2006-2010") %>%
-  select(year, geoid = GEOID10, geometry)
+  select(year, geoid = GEOID10, GISJOIN, geometry)
 
-tract_2016 <- tract_2016 %>% 
+tract_2016_shp <- tract_2016_shp %>% 
   mutate(year = "2012-2016") %>%
-  select(year, geoid = GEOID, geometry)
+  select(year, geoid = GEOID, GISJOIN, geometry)
 
-tract <- bind_rows(tract_2000, tract_2010, tract_2016)
+tract_shp <- bind_rows(tract_2000_shp, tract_2010_shp, tract_2016_shp)
 
-ctpp <- left_join(tract, ctpp)
+ctpp <- left_join(tract_shp, ctpp)
 
-ctpp %>% filter(!geoid %in% tract$geoid) %>% pull(tractfp) %>% table
+ctpp %>% filter(!geoid %in% tract_shp$geoid) %>% pull(tractfp) %>% table
 
 
 #### D. Add metro name, filter to metros ---------------------------------------
@@ -136,7 +143,83 @@ ctpp <- ctpp %>%
   inner_join(cbsa)
 
 
-#### D. Save to disk -----------------------------------------------------------
+#### E. Prepare and append other tract estimates -------------------------------
+
+#2000 estimates
+tract_2000 <- tract_2000 %>%
+  mutate(trt_tot_pop = FL5001,
+         trt_tot_nhw = FMS001,
+         trt_tot_nhb = FMS002,
+         trt_tot_nha = FMS004 + FMS005,
+         trt_tot_h = FMS008 + FMS009 + FMS010 + FMS011 + FMS012 + FMS013 + FMS014,
+         trt_med_hh_inc = GMY001,
+         trt_tot_pov = GN6001,
+         trt_tot_pov_det = GN6001 + GN6002,
+         year = "2000") %>%
+  select(GISJOIN, year, starts_with("trt_"))
+
+#2010 estimates
+tract_2010 <- tract_2010 %>%
+  mutate(trt_tot_pop = JMAE001,
+         trt_tot_nhw = JMJE003,
+         trt_tot_nhb = JMJE004,
+         trt_tot_nha = JMJE006 + JMJE007,
+         trt_tot_h = JMJE012,
+         trt_med_hh_inc = JOIE001,
+         trt_tot_pov = JOCE002 + JOCE003,
+         trt_tot_pov_det = JOCE001,
+         year = "2006-2010") %>%
+  select(GISJOIN, year, starts_with("trt_"))
+
+#2016 estimates
+tract_2016 <- tract_2016 %>%
+  mutate(trt_tot_pop = AF2LE001,
+         trt_tot_nhw = AF2UE003,
+         trt_tot_nhb = AF2UE004,
+         trt_tot_nha = AF2UE006 + AF2UE007,
+         trt_tot_h = AF2UE012,
+         trt_med_hh_inc = AF49E001,
+         trt_tot_pov = AF43E002 + AF43E003,
+         trt_tot_pov_det = AF43E001,
+         year = "2012-2016") %>%
+  select(GISJOIN, year, starts_with("trt_"))
+
+#now combine into single data frame
+tract <- bind_rows(tract_2000, tract_2010, tract_2016)
+
+#join to CTPP data by tract and year vals
+ctpp <- left_join(ctpp, tract)
+
+#make sure there's no grouping applied to the table
+ctpp <- ungroup(ctpp)
+
+#now mutate a few columns for nighttime racial/eth composition
+ctpp <- ctpp %>%
+  mutate(trt_tot_nho = trt_tot_pop - (trt_tot_nhw + trt_tot_nhb + trt_tot_nha + trt_tot_h),
+         trt_shr_nhw_pm = trt_tot_nhw/trt_tot_pop,
+         trt_shr_nhb_pm = trt_tot_nhb/trt_tot_pop,
+         trt_shr_h_pm = trt_tot_h/trt_tot_pop,
+         trt_shr_nha_pm = trt_tot_nha/trt_tot_pop,
+         trt_shr_nho_pm = trt_tot_nho/trt_tot_pop)
+
+#compute "daytime" compositions using total pop estimates + day among workers
+ctpp <- ctpp %>%
+  mutate(trt_tot_nhw_am = trt_tot_nhw - (res_nhw_est - pow_nhw_est),
+         trt_tot_nhb_am = trt_tot_nhb - (res_nhb_est - pow_nhb_est),
+         trt_tot_h_am = trt_tot_h - (res_h_est - pow_h_est),
+         trt_tot_nha_am = trt_tot_nha - (res_nha_est - pow_nha_est),
+         trt_tot_nho_am = trt_tot_nho - (res_nho_est - pow_nho_est)) %>%
+  mutate_at(vars(ends_with("_am")), ~ ifelse(. < 0, 0, .)) %>%
+  mutate(trt_tot_pop_am = trt_tot_nhw_am + trt_tot_nhb_am + trt_tot_h_am + 
+           trt_tot_nha_am + trt_tot_nho_am) %>%
+  mutate(trt_shr_nhw_am = trt_tot_nhw_am/trt_tot_pop_am,
+         trt_shr_nhb_am = trt_tot_nhb_am/trt_tot_pop_am,
+         trt_shr_h_am = trt_tot_h_am/trt_tot_pop_am,
+         trt_shr_nha_am = trt_tot_nha_am/trt_tot_pop_am,
+         trt_shr_nho_am = trt_tot_nho_am/trt_tot_pop_am) 
+
+
+#### F. Save to disk -----------------------------------------------------------
 
 save(ctpp, file = "./input/ctpp-neigh-chg-data.RData")
                         
