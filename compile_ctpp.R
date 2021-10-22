@@ -26,10 +26,21 @@ tract_2010_shp <- st_read("./input/geo/US_tract_2010.shp")
 tract_2016_shp <- st_read("./input/geo/US_tract_2016.shp")
 
 #load NHGIS cbsa shapefile
-cbsa <- st_read("./input/geo/US_cbsa_2010.shp")
+cbsa_2010 <- st_read("./input/geo/US_cbsa_2010.shp")
+cbsa <- st_read("./input/geo/US_cbsa_2013.shp")
+
+#load NHGIS CBSA estimates
+cbsa_2016_a <- read_csv("./input/nhgis0195_csv/nhgis0195_ds225_20165_2016_cbsa.csv")
+cbsa_2016_b <- read_csv("./input/nhgis0195_csv/nhgis0195_ds226_20165_2016_cbsa.csv")
+cbsa_2016 <- inner_join(cbsa_2016_a, cbsa_2016_b)
 
 #load NHGIS place shapefile
 place <- st_read("./input/geo/US_place_2010.shp")
+
+#load Holian and Kahn CBD coordinates
+cbd_geocodes <- read_csv("./input/CBD_geocodes.csv") %>%
+  select(CBSAFP10 = CBSA_code, cbd_lat = CBDlat, cbd_lng = CBDlon) %>%
+  mutate(CBSAFP10 = as.character(CBSAFP10))
 
 
 #### A. Load and munge tract CTPP extracts to tract-year table -----------------
@@ -104,7 +115,7 @@ state_crosswalk <- county_2000 %>%
 #prep the 2010 data to be joined on time-invariant basis, also ensure DC included
 county <- county_2010 %>%
   st_drop_geometry() %>%
-  select(county = NAME10, cbsafp = CBSAFP10, countylsad = NAMELSAD10, statefp = STATEFP10, countyfp = COUNTYFP10) %>%
+  select(county = NAME10, cbsafp10 = CBSAFP10, countylsad = NAMELSAD10, statefp = STATEFP10, countyfp = COUNTYFP10) %>%
   left_join(state_crosswalk) %>%
   filter(!(state == "Virginia" & countyfp == "159"))
 
@@ -147,66 +158,87 @@ ctpp <- left_join(tract_shp, ctpp)
 ctpp %>% filter(!geoid %in% tract_shp$geoid) %>% pull(tractfp) %>% table
 
 
-#### D. Add metro name, filter to metros ---------------------------------------
+#### D. Prepare to metro name, distance to CBD ---------------------------------
 
-cbsa <- cbsa %>% 
-  st_drop_geometry %>% 
-  filter(MEMI10 == 1) %>% 
-  select(cbsafp = CBSAFP10, metro_name = NAME10)
+cbd_geocodes <- cbd_geocodes %>%
+  rename(cbsafp10 = CBSAFP10) %>%
+  st_as_sf(coords = c("cbd_lng", "cbd_lat"), remove = FALSE) %>%
+  st_set_crs(4326) %>%
+  st_transform(st_crs(cbsa_2010)) %>%
+  rowwise() %>%
+  mutate(cbd_lng = st_coordinates(geometry)[,1],
+         cbd_lat = st_coordinates(geometry)[,2]) %>%
+  ungroup() %>%
+  st_drop_geometry()
+
+tract_2010_cent <- tract_2010_shp %>%
+  st_centroid() %>%
+  st_join(cbsa_2010 %>% select(cbsafp10 = CBSAFP10, metro_name = NAME10)) %>%
+  left_join(cbd_geocodes) %>%
+  filter(!is.na(metro_name))
+
+tract_2010_cent <- tract_2010_cent %>% 
+  rowwise() %>%
+  mutate(trt_lng = st_coordinates(geometry)[,1],
+         trt_lat = st_coordinates(geometry)[,2]) %>%
+  ungroup() %>%
+  mutate(dist_to_cbd = sqrt((trt_lng - cbd_lng)^2 + (trt_lat - cbd_lat)^2))
+
+tract_2010_cent <- tract_2010_cent %>%
+  st_drop_geometry() %>%
+  filter(!is.na(dist_to_cbd)) %>%
+  select(geoid, GISJOIN, cbsafp10, metro_name, dist_to_cbd)
+
+
+#### E. Prepare and append tract estimates -------------------------------------
+
+#2000 estimates
+tract_2000 <- tract_2000 %>%
+  mutate(trt_tot_pop = FL5001,
+         trt_tot_nhw = FMS001,
+         trt_tot_nhb = FMS002,
+         trt_tot_nha = FMS004 + FMS005,
+         trt_tot_h = FMS008 + FMS009 + FMS010 + FMS011 + FMS012 + FMS013 + FMS014,
+         trt_tot_pov = GN6001,
+         trt_tot_pov_det = GN6001 + GN6002,
+         year = "2000") %>%
+  select(GISJOIN, year, starts_with("trt_"))
+
+#2010 estimates
+tract_2010 <- tract_2010 %>%
+  mutate(trt_tot_pop = JMAE001,
+         trt_tot_nhw = JMJE003,
+         trt_tot_nhb = JMJE004,
+         trt_tot_nha = JMJE006 + JMJE007,
+         trt_tot_h = JMJE012,
+         trt_tot_pov = JOCE002 + JOCE003,
+         trt_tot_pov_det = JOCE001,
+         year = "2006-2010 ACS") %>%
+  select(GISJOIN, year, starts_with("trt_"))
+
+#2016 estimates
+tract_2016 <- tract_2016 %>%
+  mutate(trt_tot_pop = AF2LE001,
+         trt_tot_nhw = AF2UE003,
+         trt_tot_nhb = AF2UE004,
+         trt_tot_nha = AF2UE006 + AF2UE007,
+         trt_tot_h = AF2UE012,
+         trt_tot_pov = AF43E002 + AF43E003,
+         trt_tot_pov_det = AF43E001,
+         year = "2012-2016 ACS") %>%
+  select(GISJOIN, year, starts_with("trt_"))
+
+#now combine into single data frame
+tract <- bind_rows(tract_2000, tract_2010, tract_2016)
+
+#join to CTPP data by tract and year vals
+ctpp <- left_join(ctpp, tract)
+
+#make sure there's no grouping applied to the table
+ctpp <- ungroup(ctpp)
 
 ctpp <- ctpp %>%
-  inner_join(cbsa)
-
-
-#### E. Prepare and append other tract estimates -------------------------------
-
-# #2000 estimates
-# tract_2000 <- tract_2000 %>%
-#   mutate(trt_tot_pop = FL5001,
-#          trt_tot_nhw = FMS001,
-#          trt_tot_nhb = FMS002,
-#          trt_tot_nha = FMS004 + FMS005,
-#          trt_tot_h = FMS008 + FMS009 + FMS010 + FMS011 + FMS012 + FMS013 + FMS014,
-#          trt_tot_pov = GN6001,
-#          trt_tot_pov_det = GN6001 + GN6002,
-#          year = "2000") %>%
-#   select(GISJOIN, year, starts_with("trt_"))
-# 
-# #2010 estimates
-# tract_2010 <- tract_2010 %>%
-#   mutate(trt_tot_pop = JMAE001,
-#          trt_tot_nhw = JMJE003,
-#          trt_tot_nhb = JMJE004,
-#          trt_tot_nha = JMJE006 + JMJE007,
-#          trt_tot_h = JMJE012,
-#          trt_tot_pov = JOCE002 + JOCE003,
-#          trt_tot_pov_det = JOCE001,
-#          year = "2006-2010 ACS") %>%
-#   select(GISJOIN, year, starts_with("trt_"))
-# 
-# #2016 estimates
-# tract_2016 <- tract_2016 %>%
-#   mutate(trt_tot_pop = AF2LE001,
-#          trt_tot_nhw = AF2UE003,
-#          trt_tot_nhb = AF2UE004,
-#          trt_tot_nha = AF2UE006 + AF2UE007,
-#          trt_tot_h = AF2UE012,
-#          trt_tot_pov = AF43E002 + AF43E003,
-#          trt_tot_pov_det = AF43E001,
-#          year = "2012-2016 ACS") %>%
-#   select(GISJOIN, year, starts_with("trt_"))
-# 
-# #now combine into single data frame
-# tract <- bind_rows(tract_2000, tract_2010, tract_2016)
-# 
-# #join to CTPP data by tract and year vals
-# ctpp <- left_join(ctpp, tract)
-# 
-# #make sure there's no grouping applied to the table
-# ctpp <- ungroup(ctpp)
-
-ctpp <- ctpp %>%
-   select(-(trt_string:state))
+  select(-(trt_string:state))
 
 
 #### Harmonize the geography as best as possible -------------------------------
@@ -228,8 +260,7 @@ ctpp_2000 <- ctpp %>%
   filter(!is.na(geoid)) %>%
   left_join(ctpp %>% st_drop_geometry() %>% 
               filter(year == "2006-2010 ACS") %>% 
-              select(geoid, cbsafp, statefp, countyfp, metro_name)) %>%
-  filter(!is.na(metro_name))
+              select(geoid, cbsafp10, statefp, countyfp))
 
 #now replace the 2000 delineated estimates with our 2010 delineated estimates
 ctpp <- ctpp %>%
@@ -245,6 +276,10 @@ tract_places <- tract_2010_shp %>%
 
 #join place information to the ctpp data
 ctpp <- inner_join(ctpp, tract_places)
+
+#join cbsa and distance to CBD data frame
+ctpp <- inner_join(ctpp, tract_2010_cent) %>%
+  filter(!is.na(metro_name))
 
 
 #### Now compute compositions since counts are good to go ----------------------
@@ -272,6 +307,17 @@ ctpp <- ctpp %>%
          chg_nha = trt_shr_nha_am - trt_shr_nha_pm,
          chg_h = trt_shr_h_am - trt_shr_h_pm,
          chg_nho = trt_shr_nho_am - trt_shr_nho_pm) 
+
+#### Compute segregation indices -----------------------------------------------
+
+ctpp <- ctpp %>%
+  group_by(cbsafp10, metro_name, year) %>%
+  mutate(dis_nhb_nhw = (.5) * sum(abs(trt_tot_nhb/sum(trt_tot_nhb) - 
+                                        trt_tot_nhw/sum(trt_tot_nhw))),
+         dis_h_nhw = (.5) * sum(abs(trt_tot_h/sum(trt_tot_h) - 
+                                        trt_tot_nhw/sum(trt_tot_nhw))),
+         dis_nha_nhw = (.5) * sum(abs(trt_tot_nha/sum(trt_tot_nha) - 
+                                        trt_tot_nhw/sum(trt_tot_nhw))))
 
 
 #### F. Save to disk -----------------------------------------------------------
