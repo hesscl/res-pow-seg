@@ -11,11 +11,17 @@ county_2000 <- st_read("./input/geo/US_county_2000.shp")
 county_2010 <- st_read("./input/geo/US_county_2010.shp")
 
 #load NHGIS tract estimates
-tract_2000_a <- read_csv("./input/nhgis0189_csv/nhgis0189_ds146_2000_tract.csv")
-tract_2000_b <- read_csv("./input/nhgis0189_csv/nhgis0189_ds151_2000_tract.csv")
+tract_2000_a <- read_csv("./input/nhgis0213_csv/nhgis0213_ds146_2000_tract.csv")
+tract_2000_b <- read_csv("./input/nhgis0213_csv/nhgis0213_ds151_2000_tract.csv")
 tract_2000 <- inner_join(tract_2000_a, tract_2000_b)
-tract_2010 <- read_csv("./input/nhgis0189_csv/nhgis0189_ds176_20105_2010_tract.csv")
-tract_2016 <- read_csv("./input/nhgis0189_csv/nhgis0189_ds225_20165_2016_tract.csv")
+
+tract_2010_a <- read_csv("./input/nhgis0213_csv/nhgis0213_ds176_20105_tract.csv")
+tract_2010_b <- read_csv("./input/nhgis0213_csv/nhgis0213_ds177_20105_tract.csv")
+tract_2010 <- inner_join(tract_2010_a, tract_2010_b)
+
+tract_2016_a <- read_csv("./input/nhgis0213_csv/nhgis0213_ds225_20165_tract.csv")
+tract_2016_b <- read_csv("./input/nhgis0213_csv/nhgis0213_ds226_20165_tract.csv")
+tract_2016 <- inner_join(tract_2016_a, tract_2016_b)
 
 #load the 2000 blockgroup to tract crosswalk
 tract_cw <- read_csv("./input/cw/crosswalk_2000_2010.csv")
@@ -95,7 +101,7 @@ ctpp <- list(file = ctpp_tract_files,
   filter(!state %in% c("Puerto Rico", ""), trt_name != "Tract 999999") %>%
   mutate(county = ifelse(state == "Illinois" & county == "La Salle", "LaSalle", county),
          county = ifelse(state == "Louisiana" & county == "LaSalle", "La Salle", county),
-         county = ifelse(state == "New Mexico" & county == "Dona Ana", "Doña Ana", county)) %>%
+         county = ifelse(state == "New Mexico" & county == "Dona Ana", "Do?a Ana", county)) %>%
   mutate_at(vars(ends_with("_est"), ends_with("_moe")), ~ ifelse(is.na(.), 0, .))
 
 #check result
@@ -115,9 +121,11 @@ state_crosswalk <- county_2000 %>%
 #prep the 2010 data to be joined on time-invariant basis, also ensure DC included
 county <- county_2010 %>%
   st_drop_geometry() %>%
-  select(county = NAME10, cbsafp10 = CBSAFP10, countylsad = NAMELSAD10, statefp = STATEFP10, countyfp = COUNTYFP10) %>%
+  select(county = NAME10, cbsafp10 = CBSAFP10, 
+         countylsad = NAMELSAD10, statefp = STATEFP10, countyfp = COUNTYFP10) %>%
+  mutate_at(vars(county, countylsad), ~ str_trim(., side = "both")) %>%
   left_join(state_crosswalk) %>%
-  filter(!(state == "Virginia" & countyfp == "159"))
+  filter(!is.na(cbsafp10))
 
 #join the state and county fips codes to the CTPP data
 ctpp <- left_join(ctpp, county) 
@@ -201,6 +209,7 @@ tract_2000 <- tract_2000 %>%
          trt_tot_h = FMS008 + FMS009 + FMS010 + FMS011 + FMS012 + FMS013 + FMS014,
          trt_tot_pov = GN6001,
          trt_tot_pov_det = GN6001 + GN6002,
+         trt_tot_for_born = GI8002,
          year = "2000") %>%
   select(GISJOIN, year, starts_with("trt_"))
 
@@ -213,6 +222,7 @@ tract_2010 <- tract_2010 %>%
          trt_tot_h = JMJE012,
          trt_tot_pov = JOCE002 + JOCE003,
          trt_tot_pov_det = JOCE001,
+         trt_tot_for_born = JWUE003,
          year = "2006-2010 ACS") %>%
   select(GISJOIN, year, starts_with("trt_"))
 
@@ -225,6 +235,7 @@ tract_2016 <- tract_2016 %>%
          trt_tot_h = AF2UE012,
          trt_tot_pov = AF43E002 + AF43E003,
          trt_tot_pov_det = AF43E001,
+         trt_tot_for_born = AGC0E003,
          year = "2012-2016 ACS") %>%
   select(GISJOIN, year, starts_with("trt_"))
 
